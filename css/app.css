@@ -68,6 +68,13 @@ a { color: var(--primario); }
 .nav a { color: var(--cab-texto); text-decoration: none; padding: .45rem .8rem; border-radius: 8px; opacity: .85; }
 .nav a:hover { background: rgba(255,255,255,.1); opacity: 1; }
 .nav a.activo { background: rgba(255,255,255,.16); opacity: 1; font-weight: 600; }
+.estado-red { margin-left: auto; }
+.estado-red + .usuario { margin-left: .8rem; }
+.estado-red:empty + .usuario { margin-left: auto; }
+.red-chip { display: inline-block; font: inherit; font-size: .82rem; font-weight: 600; padding: .3rem .7rem; border-radius: 99px; border: 0; text-decoration: none; cursor: default; }
+.red-off { background: #f7c66b; color: #3d2600; }
+.red-pend { background: #cfe8eb; color: #0b3c42; cursor: pointer; }
+.red-error { background: #f3a6a6; color: #4a0000; cursor: pointer; }
 .usuario { margin-left: auto; font-size: .85rem; opacity: .7; }
 
 main { max-width: 1480px; margin: 0 auto; padding: 1.2rem 1.2rem 6rem; }

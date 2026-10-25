@@ -67,9 +67,9 @@
   const RUTAS = [
     [/^#\/albaranes$/, verLista],
     [/^#\/nuevo$/, () => verEditor(null)],
-    [/^#\/nuevo\/copia\/(\d+)$/, m => verEditor(null, Number(m[1]))],
+    [/^#\/nuevo\/copia\/(-?\d+)$/, m => verEditor(null, Number(m[1]))],
     [/^#\/editar\/(\d+)$/, m => verEditor(Number(m[1]))],
-    [/^#\/albaran\/(\d+)$/, m => verAlbaran(Number(m[1]))],
+    [/^#\/albaran\/(-?\d+)$/, m => verAlbaran(Number(m[1]))],
     [/^#\/clientes$/, verClientes],
     [/^#\/productos$/, verProductos],
     [/^#\/resumen$/, verResumen],
@@ -169,6 +169,7 @@
         </div>
       </div>
       <div id="tabla-lista"></div>`;
+    if (!B.enLinea) $('#tabla-lista').insertAdjacentHTML('beforebegin', '<div class="banda banda-naranja">Sin conexión a internet. Solo se ven los albaranes hechos en este ordenador sin conexión. Puedes hacer albaranes nuevos con normalidad; el resto de la lista aparecerá cuando vuelva internet.</div>');
 
     // los albaranes sobre los que actúan los botones: los marcados, o si no hay ninguno, los de la lista
     const objetivo = () => { const f = filtrarLista(); const m = f.filter(a => ST.sel.has(a.id)); return m.length ? m : f; };
@@ -260,7 +261,7 @@
     };
 
     $('#b-enviados').onclick = async e => {
-      const ids = objetivo().filter(a => !a.enviado_asesoria_at || a.modificado_tras_envio).map(a => a.id);
+      const ids = objetivo().filter(a => !a.pendiente && (!a.enviado_asesoria_at || a.modificado_tras_envio)).map(a => a.id);
       if (!ids.length) return aviso('Esos albaranes ya están marcados como enviados.', 'info');
       if (!await confirmar('Marcar como enviados', `Se marcarán <b>${ids.length}</b> albaranes como entregados a la asesoría. Si después se modifica alguno, aparecerá como <b>modificado tras envío</b>.`, 'Marcar enviados')) return;
       ocupado(e.target, async () => { await B.marcarEnviados(ids); ST.sel.clear(); aviso(ids.length + ' albaranes marcados como enviados'); verLista(); });
@@ -287,6 +288,7 @@
   }
   function etiquetasEstado(a) {
     let s = '';
+    if (a.pendiente) return a.conflicto ? '<span class="etq etq-roja">Número ya usado</span>' : '<span class="etq etq-naranja">Sin conexión · pendiente de subir</span>';
     if (a.estado === 'anulado') s += '<span class="etq etq-roja">Anulado</span>';
     if (a.modificado_tras_envio) s += '<span class="etq etq-naranja">Modificado tras envío</span>';
     else if (a.enviado_asesoria_at) s += '<span class="etq etq-verde">Enviado</span>';
@@ -330,7 +332,7 @@
     const [a, hist] = await Promise.all([B.albaran(id), B.historial(id).catch(() => [])]);
     const blob = window.generarPdf(a, ST.ajustes, 1).output('blob');
     const url = URL.createObjectURL(blob);
-    const anulado = a.estado === 'anulado';
+    const anulado = a.estado === 'anulado', pendiente = !!a.pendiente;
     vista().innerHTML = `
       <div class="barra-titulo">
         <div><a href="#/albaranes" class="volver">← Albaranes</a>
@@ -339,12 +341,15 @@
         <div class="acciones">
           ${anulado ? '' : '<button class="btn btn-primario btn-grande" id="b-imprimir">🖨 Imprimir (2 copias)</button>'}
           <button class="btn" id="b-descargar">Descargar PDF</button>
-          ${anulado ? '' : `<a class="btn" href="#/editar/${a.id}">Modificar</a>`}
+          ${anulado || pendiente ? '' : `<a class="btn" href="#/editar/${a.id}">Modificar</a>`}
           <a class="btn" href="#/nuevo/copia/${a.id}" title="Crea un albarán nuevo con los mismos datos">Duplicar</a>
-          ${anulado ? '<button class="btn btn-primario" id="b-reactivar">Rehacer con este número</button>' : '<button class="btn btn-peligro-borde" id="b-anular">Anular</button>'}
+          ${pendiente ? '' : anulado ? '<button class="btn btn-primario" id="b-reactivar">Rehacer con este número</button>' : '<button class="btn btn-peligro-borde" id="b-anular">Anular</button>'}
         </div>
       </div>
       ${anulado ? `<div class="banda banda-roja">Este albarán está <b>anulado</b>${a.motivo_anulacion ? ': ' + esc(a.motivo_anulacion) : ''}. No cuenta en los totales. Puedes rehacerlo con el mismo número.</div>` : ''}
+      ${pendiente && !a.conflicto ? '<div class="banda banda-naranja">Hecho <b>sin conexión</b>. Está guardado en este ordenador y se subirá solo cuando vuelva internet. Hasta entonces no se puede modificar ni anular.</div>' : ''}
+      ${a.conflicto ? `<div class="banda banda-roja">No se ha podido subir: el número <b>${a.numero}</b> ya lo tiene otro albarán (se hizo otro desde otro ordenador mientras no había conexión).<br>
+        <button class="btn btn-peligro" id="b-renumerar" style="margin-top:.5rem">Subir con el siguiente número libre</button> <span class="peq">Después habrá que imprimirlo de nuevo y cambiar el papel.</span></div>` : ''}
       ${a.modificado_tras_envio ? '<div class="banda banda-naranja">Se modificó <b>después de enviarlo a la asesoría</b>. Recuerda mandarles la versión nueva.</div>' : ''}
       <div class="ver-rejilla">
         ${matchMedia('(max-width: 1000px), (pointer: coarse)').matches
@@ -356,6 +361,17 @@
         </div>
       </div>`;
     const b2 = () => window.generarPdf(a, ST.ajustes, 2).output('blob');
+    if ($('#b-renumerar')) $('#b-renumerar').onclick = async ev => {
+      if (!await confirmar('Cambiar el número', `El albarán ${a.numero} se subirá con el <b>siguiente número libre</b>. Se imprimirá de nuevo para que cambies el papel que se entregó.`, 'Subir con número nuevo', true)) return;
+      const carpeta = await ARCHIVOS.prepararPermiso();
+      ocupado(ev.target, async () => {
+        const nuevo = await B.subirConNuevoNumero(a.numero);
+        await guardarCopiasPdf(nuevo, carpeta, window.nombrePdf(a));
+        ARCHIVOS.imprimir(window.generarPdf(nuevo, ST.ajustes, 2).output('blob'));
+        aviso(`Subido como albarán ${nuevo.numero}. Imprime y sustituye el papel del ${a.numero}.`, 'aviso', 10000);
+        hashAnterior = '#/albaran/' + nuevo.id; location.hash = '#/albaran/' + nuevo.id;
+      });
+    };
     if ($('#b-imprimir')) $('#b-imprimir').onclick = () => ARCHIVOS.imprimir(b2());
     $('#b-descargar').onclick = () => ARCHIVOS.descargar(blob, window.nombrePdfMes(a));
     if ($('#b-anular')) $('#b-anular').onclick = () => modal(`
@@ -376,7 +392,7 @@
       ocupado(ev.target, async () => { await B.reactivarAlbaran(a.id); location.hash = '#/editar/' + a.id; });
     };
   }
-  const textoAccion = a => ({ creado: 'Creado', modificado: 'Modificado', anulado: 'Anulado', reactivado: 'Reactivado para rehacer', enviado: 'Marcado como enviado a asesoría' }[a] || a);
+  const textoAccion = a => ({ creado: 'Creado', modificado: 'Modificado', anulado: 'Anulado', reactivado: 'Reactivado para rehacer', enviado: 'Marcado como enviado a asesoría', 'creado sin conexión': 'Creado sin conexión (subido después)' }[a] || a);
   function diferencias(antes, desp) {
     if (!antes || !desp) return '';
     const d = [];
@@ -405,8 +421,10 @@
       }
       catch (e) { avisos.push('No se pudo guardar el PDF en la carpeta del ordenador (' + (e.message || e) + ').'); }
     }
-    try { await B.subirPdf(a.anio, a.numero, blob); }
-    catch (e) { avisos.push('No se pudo subir la copia del PDF a la nube: ' + errorLegible(e)); }
+    if (!a.pendiente) {
+      try { await B.subirPdf(a.anio, a.numero, blob); }
+      catch (e) { if (!e.sinRed) avisos.push('No se pudo subir la copia del PDF a la nube: ' + errorLegible(e)); }
+    }
     avisos.forEach(t => aviso(t, 'aviso', 8000));
   }
 
@@ -672,7 +690,8 @@
         ST.sucio = false;
         await guardarCopiasPdf(a, carpeta, id ? window.nombrePdf(original) : null);
         if (imprimir) ARCHIVOS.imprimir(window.generarPdf(a, ST.ajustes, 2).output('blob'));
-        aviso(`Albarán ${a.numero} ${id ? 'modificado' : 'guardado'}${carpeta ? ' y PDF guardado en la carpeta' : ''}`);
+        if (a.pendiente) aviso(`Albarán ${a.numero} guardado SIN CONEXIÓN en este ordenador. Se subirá solo cuando vuelva internet.`, 'aviso', 9000);
+        else aviso(`Albarán ${a.numero} ${id ? 'modificado' : 'guardado'}${carpeta ? ' y PDF guardado en la carpeta' : ''}`);
         hashAnterior = '#/albaran/' + a.id;
         location.hash = '#/albaran/' + a.id;
       });
@@ -826,6 +845,7 @@
   // ══════════════════════════════════════════════════════
   async function verResumen() {
     vista().innerHTML = '<div class="cargando"><span class="giro"></span> Calculando…</div>';
+    if (!(await B.hayRed())) { vista().innerHTML = '<div class="tarjeta vacio"><h2>Sin conexión</h2><p>El resumen necesita internet. Vuelve a intentarlo cuando haya conexión.</p></div>'; return; }
     const [lista, anios] = await Promise.all([B.albaranes(ST.anio), B.anios()]);
     if (!anios.includes(ST.anio)) anios.unshift(ST.anio);
     const val = lista.filter(a => a.estado === 'activo');
@@ -905,7 +925,9 @@
         <section class="tarjeta">
           <h2>Sesión</h2>
           <p>Has entrado como <b>${esc(ST.usuario)}</b>.</p>
-          ${B.modo === 'prueba' ? '<p class="tenue peq">Modo prueba: los datos se guardan solo en este navegador.</p><button class="btn btn-peligro-borde" id="b-reset">Borrar datos de prueba</button>' : '<button class="btn" id="b-salir">Cerrar sesión</button>'}
+          ${B.modo === 'prueba' ? `<p class="tenue peq">Modo prueba: los datos se guardan solo en este navegador.</p>
+            <label class="check"><input type="checkbox" id="a-sinred" ${(() => { try { return localStorage.getItem('alb-simular-sin-red') === '1'; } catch (e) { return false; } })() ? 'checked' : ''}> Simular que no hay internet (para probar)</label>
+            <div class="fila-botones"><button class="btn btn-peligro-borde" id="b-reset">Borrar datos de prueba</button></div>` : '<button class="btn" id="b-salir">Cerrar sesión</button>'}
         </section>
       </div>`;
     if ($('#b-carpeta')) $('#b-carpeta').onclick = async () => { try { const n = await ARCHIVOS.elegirCarpeta(); aviso('Carpeta elegida: ' + n); verAjustes(); } catch (e) { if (e.name !== 'AbortError') aviso(String(e.message || e), 'error'); } };
@@ -923,7 +945,11 @@
       emp.lineas = [0, 1, 2, 3, 4, 5].map(i => fd.get('l' + i)).filter(Boolean);
       ocupado($('button', e.target), async () => { await B.guardarAjuste('empresa', emp); ST.ajustes.empresa = emp; aviso('Datos de empresa guardados'); });
     };
-    if ($('#b-salir')) $('#b-salir').onclick = async () => { await B.salir(); ST.usuario = null; location.hash = ''; verLogin(); };
+    if ($('#b-salir')) $('#b-salir').onclick = async e => ocupado(e.target, async () => { await B.salir(); ST.usuario = null; location.hash = ''; verLogin(); });
+    if ($('#a-sinred')) $('#a-sinred').onchange = e => {
+      try { localStorage.setItem('alb-simular-sin-red', e.target.checked ? '1' : '0'); } catch (err) { /* */ }
+      if (e.target.checked) { B.enLinea = false; pintarRed(); aviso('Simulando sin conexión'); } else { B.enLinea = true; sincronizar(true); }
+    };
     if ($('#b-reset')) $('#b-reset').onclick = async () => {
       if (!await confirmar('Borrar datos de prueba', 'Se borran los albaranes de prueba y se vuelven a cargar los clientes y productos del Excel.', 'Borrar', true)) return;
       B.reiniciar(); await cargarComunes(); aviso('Datos de prueba reiniciados'); location.hash = '#/albaranes';
@@ -943,9 +969,44 @@
     }
     $('#cabecera').hidden = false;
     $('#modo-prueba').hidden = B.modo !== 'prueba';
+    iniciarSincronizacion();
     $('#usuario').textContent = ST.usuario;
     if (!location.hash || location.hash === '#') location.hash = '#/albaranes';
     else enrutar();
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  SIN CONEXIÓN: aviso arriba y subida automática
+  // ══════════════════════════════════════════════════════
+  function pintarRed() {
+    const el = $('#estado-red'); if (!el) return;
+    const p = B.pendientes(), conf = p.filter(x => x.conflicto).length;
+    let html = '';
+    if (!B.enLinea) html = `<span class="red-chip red-off" title="Se pueden hacer albaranes nuevos; se subirán al volver internet">● Sin conexión${p.length ? ` · ${p.length} pendiente${p.length > 1 ? 's' : ''}` : ''}</span>`;
+    else if (conf) html = `<a class="red-chip red-error" href="#/albaranes">⚠ ${conf} albarán${conf > 1 ? 'es' : ''} con número ya usado</a>`;
+    else if (p.length) html = `<button class="red-chip red-pend" id="b-subir-ya">↑ Subiendo ${p.length} albarán${p.length > 1 ? 'es' : ''}…</button>`;
+    el.innerHTML = html;
+    const b = $('#b-subir-ya'); if (b) b.onclick = () => sincronizar(true);
+  }
+  async function sincronizar(manual) {
+    if (!B.pendientes().length) { pintarRed(); return; }
+    if (!(await B.hayRed())) { if (manual) aviso('Sigue sin haber conexión.', 'info'); pintarRed(); return; }
+    try {
+      const r = await B.sincronizar();
+      if (r.subidos.length) {
+        aviso(`${r.subidos.length === 1 ? 'Se ha subido el albarán ' + r.subidos[0].numero : 'Se han subido ' + r.subidos.length + ' albaranes'} hecho${r.subidos.length > 1 ? 's' : ''} sin conexión.`);
+        if (/^#\/(albaranes|albaran\/-)/.test(location.hash) || !location.hash) enrutar();
+      }
+      if (r.conflictos) aviso('Hay albaranes hechos sin conexión cuyo número ya está usado. Ábrelos en la lista para resolverlo.', 'error', 10000);
+    } catch (e) { console.error(e); }
+    pintarRed();
+  }
+  function iniciarSincronizacion() {
+    B.alSubir = async a => { try { await B.subirPdf(a.anio, a.numero, window.generarPdf(a, ST.ajustes, 1).output('blob')); } catch (e) { /* no pasa nada */ } };
+    window.addEventListener('alb-red', pintarRed);
+    window.addEventListener('online', () => setTimeout(() => sincronizar(), 2000));
+    setInterval(() => sincronizar(), 60000);
+    pintarRed(); sincronizar();
   }
 
   (async function inicio() {

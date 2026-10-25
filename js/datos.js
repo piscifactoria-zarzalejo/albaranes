@@ -6,11 +6,15 @@
 // ════════════════════════════════════════════════════════
 (function () {
 
+  const ES_RED = /Failed to fetch|NetworkError|Load failed|fetch failed|network|AbortError|aborted|tiempo de espera/i;
+  const esErrorRed = e => !!e && (e.sinRed || ES_RED.test(e.message || String(e)));
+
   function errorLegible(e) {
     const m = (e && (e.message || e.error_description || e.msg)) || String(e);
     if (/Invalid login credentials/i.test(m)) return 'Usuario o contraseña incorrectos.';
     if (/Email not confirmed/i.test(m)) return 'El usuario no está confirmado en Supabase.';
-    if (/Failed to fetch|NetworkError|network/i.test(m)) return 'No hay conexión con la base de datos. Comprueba internet e inténtalo de nuevo.';
+    if (e && e.sinRed || ES_RED.test(m)) return 'No hay conexión a internet. Esto solo se puede hacer con conexión; inténtalo cuando vuelva.';
+    if (/NUMERO_OCUPADO/.test(m)) return 'Ese número de albarán ya existe en la base de datos.';
     if (/JWT expired/i.test(m)) return 'La sesión ha caducado. Vuelve a entrar.';
     if (/CONFLICTO/.test(m)) return m.replace(/^.*CONFLICTO:\s*/, '');
     if (/duplicate key.*codigo/i.test(m)) return 'Ya existe un cliente con ese código.';
@@ -22,11 +26,22 @@
 
   // ───────────────────────── SUPABASE ─────────────────────────
   function BackendSupabase(url, key) {
+    // si internet no responde (Starlink sin cobertura) no se queda colgado: corta a los 15 s
+    const fetchConTiempo = (recurso, opciones = {}) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 15000);
+      if (opciones.signal) opciones.signal.addEventListener('abort', () => ctrl.abort());
+      return fetch(recurso, { ...opciones, signal: ctrl.signal }).finally(() => clearTimeout(t));
+    };
     const sb = window.supabase.createClient(url, key, {
+      global: { fetch: fetchConTiempo },
       db: { schema: 'albaranes' },                 // esquema propio, separado de etiquetado
       auth: { persistSession: true, autoRefreshToken: true, storageKey: 'alb-sesion' }
     });
-    const ok = r => { if (r.error) throw new Error(errorLegible(r.error)); return r.data; };
+    const ok = r => {
+      if (r.error) { const e = new Error(errorLegible(r.error)); e.sinRed = esErrorRed(r.error); e.original = r.error.message; throw e; }
+      return r.data;
+    };
 
     this.modo = 'supabase';
     this.sesion = async () => { const { data } = await sb.auth.getSession(); return data.session ? data.session.user.email : null; };
@@ -70,6 +85,8 @@
     };
     this.albaran = async id => ok(await sb.from('albaranes').select('*').eq('id', id).single());
     this.crearAlbaran = async p => ok(await sb.rpc('crear_albaran', { p }));
+    this.crearAlbaranConNumero = async (p, numero) => ok(await sb.rpc('crear_albaran_con_numero', { p, p_numero: numero }));
+    this.hayRed = async () => { try { const r = await fetchConTiempo(url + '/auth/v1/health', { headers: { apikey: key } }); return r.ok || r.status < 500; } catch (e) { return false; } };
     this.modificarAlbaran = async (id, p, version) => ok(await sb.rpc('modificar_albaran', { p_id: id, p, p_version: version }));
     this.anularAlbaran = async (id, motivo) => ok(await sb.rpc('anular_albaran', { p_id: id, p_motivo: motivo || '' }));
     this.reactivarAlbaran = async id => ok(await sb.rpc('reactivar_albaran', { p_id: id }));
@@ -147,6 +164,15 @@
       CAMPOS.forEach(k => a[k] = p[k] ?? null);
       db.albaranes.push(a); hist(a, 'creado'); guardar(); return copia(a);
     };
+    this.crearAlbaranConNumero = async (p, numero) => {
+      if (db.albaranes.some(x => x.numero === numero)) throw new Error('NUMERO_OCUPADO');
+      const anio = Number(p.fecha.slice(0, 4));
+      db.contadores[anio] = Math.max(db.contadores[anio] || 0, numero + 1);
+      const a = { id: db.seq.alb++, numero, anio, estado: 'activo', motivo_anulacion: null, enviado_asesoria_at: null, modificado_tras_envio: false, creado_por: yo, modificado_por: yo, created_at: ahora(), updated_at: ahora() };
+      CAMPOS.forEach(k => a[k] = p[k] ?? null);
+      db.albaranes.push(a); hist(a, 'creado'); guardar(); return copia(a);
+    };
+    this.hayRed = async () => true;
     this.modificarAlbaran = async (id, p, version) => {
       const a = db.albaranes.find(x => x.id === id);
       if (version && a.updated_at !== version) throw new Error('Otra persona ha modificado este albarán mientras lo tenías abierto. Vuelve a abrirlo.');
@@ -173,9 +199,139 @@
     this.subirPdf = async () => null;
   }
 
+  // ───────────────── TRABAJO SIN CONEXIÓN ─────────────────
+  //  Envuelve cualquiera de los dos anteriores:
+  //  - guarda en el ordenador clientes, productos, ajustes y el siguiente número
+  //  - si no hay internet, los albaranes nuevos quedan "pendientes" en el ordenador
+  //    con su número, y se suben solos cuando vuelve la conexión
+  function ConCache(base) {
+    const K = 'alb-cache-' + base.modo, KP = 'alb-pendientes-' + base.modo;
+    const leer = (k, def) => { try { return JSON.parse(localStorage.getItem(k) || 'null') || def; } catch (e) { return def; } };
+    const escribir = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* almacenamiento lleno o bloqueado */ } };
+    let cache = leer(K, { sig: {} });
+    let pend = leer(KP, []);
+    const guardarCache = () => escribir(K, cache);
+    const guardarPend = () => escribir(KP, pend);
+    const self = this;
+    this.modo = base.modo;
+    this.enLinea = true;
+    this.reiniciar = base.reiniciar ? () => { base.reiniciar(); cache = { sig: {} }; pend = []; guardarCache(); guardarPend(); } : undefined;
+
+    const avisar = () => window.dispatchEvent(new CustomEvent('alb-red'));
+    const marcar = v => { if (self.enLinea !== v) { self.enLinea = v; avisar(); } };
+    const simulaSinRed = () => base.modo === 'prueba' && (() => { try { return localStorage.getItem('alb-simular-sin-red') === '1'; } catch (e) { return false; } })();
+    async function red(fn) {
+      if (simulaSinRed()) { marcar(false); const e = new Error('Failed to fetch (simulado)'); e.sinRed = true; e.message = errorLegible(e); throw e; }
+      try { const r = await fn(); marcar(true); return r; }
+      catch (e) { if (esErrorRed(e)) { e.sinRed = true; marcar(false); } throw e; }
+    }
+    const conCopia = async (fn, clave) => {
+      try { const r = await red(fn); cache[clave] = r; guardarCache(); return r; }
+      catch (e) { if (e.sinRed && cache[clave] !== undefined) return JSON.parse(JSON.stringify(cache[clave])); throw e; }
+    };
+
+    // ── sesión ──
+    this.sesion = async () => {
+      let u = null;
+      try { u = await base.sesion(); } catch (e) { /* sin red */ }
+      if (u) { cache.usuario = u; guardarCache(); return u; }
+      if (cache.usuario && !(await this.hayRed())) { marcar(false); return cache.usuario; }   // sin internet: sigue con el último usuario
+      return null;
+    };
+    this.entrar = async (email, pass) => { const u = await red(() => base.entrar(email, pass)); cache.usuario = u; guardarCache(); return u; };
+    this.salir = async () => {
+      if (pend.length) throw new Error('Hay albaranes hechos sin conexión que aún no se han subido. Espera a que vuelva internet antes de cerrar la sesión.');
+      await red(() => base.salir()); cache = { sig: {} }; guardarCache();
+    };
+    this.hayRed = async () => { if (simulaSinRed()) return false; if (navigator.onLine === false) return false; return base.hayRed ? base.hayRed() : true; };
+
+    // ── datos que se guardan en el ordenador ──
+    this.ajustes = () => conCopia(() => base.ajustes(), 'ajustes');
+    this.clientes = () => conCopia(() => base.clientes(), 'clientes');
+    this.productos = () => conCopia(() => base.productos(), 'productos');
+
+    const siguienteLocal = anio => Math.max(cache.sig[anio] || anio * 10000 + 1, ...pend.filter(x => x.anio === anio).map(x => x.numero + 1));
+    this.contador = async anio => {
+      try { const n = await red(() => base.contador(anio)); cache.sig[anio] = n; guardarCache(); return Math.max(n, siguienteLocal(anio)); }
+      catch (e) { if (e.sinRed) return siguienteLocal(anio); throw e; }
+    };
+    this.fijarContador = async (anio, sig) => { await red(() => base.fijarContador(anio, sig)); cache.sig[anio] = sig; guardarCache(); };
+
+    // ── albaranes ──
+    const comoAlbaran = x => ({ ...x.p, id: -x.numero, numero: x.numero, anio: x.anio, estado: 'activo', pendiente: true,
+      conflicto: x.conflicto || false, creado_por: x.usuario, created_at: x.creado, updated_at: x.creado });
+    this.pendientes = () => pend.map(comoAlbaran);
+    this.albaranes = async anio => {
+      const loc = pend.filter(x => !anio || x.anio === anio).map(comoAlbaran);
+      try {
+        const srv = await red(() => base.albaranes(anio));
+        return [...loc, ...srv].sort((a, b) => b.numero - a.numero || (a.pendiente ? -1 : 1));
+      } catch (e) { if (e.sinRed) return loc; throw e; }
+    };
+    this.anios = async () => { try { return await red(() => base.anios()); } catch (e) { if (e.sinRed) return [new Date().getFullYear()]; throw e; } };
+    this.albaran = async id => {
+      id = Number(id);
+      if (id < 0) { const x = pend.find(y => y.numero === -id); if (!x) throw new Error('Ese albarán ya se ha subido. Búscalo en la lista.'); return comoAlbaran(x); }
+      return red(() => base.albaran(id));
+    };
+    this.historial = async id => Number(id) < 0 ? [] : red(() => base.historial(id));
+    this.crearAlbaran = async p => {
+      const anio = Number(p.fecha.slice(0, 4));
+      try {
+        const a = await red(() => base.crearAlbaran(p));
+        cache.sig[anio] = Math.max(cache.sig[anio] || 0, a.numero + 1); guardarCache();
+        return a;
+      } catch (e) {
+        if (!e.sinRed) throw e;
+        // sin internet: se guarda en el ordenador con el siguiente número
+        const x = { numero: siguienteLocal(anio), anio, p, usuario: cache.usuario || '', creado: new Date().toISOString() };
+        pend.push(x); guardarPend(); avisar();
+        return comoAlbaran(x);
+      }
+    };
+    ['modificarAlbaran', 'anularAlbaran', 'reactivarAlbaran', 'marcarEnviados', 'guardarCliente', 'guardarProducto', 'guardarAjuste', 'subirPdf']
+      .forEach(f => { self[f] = (...args) => red(() => base[f](...args)); });
+
+    // ── subir lo pendiente ──
+    let subiendo = false;
+    this.alSubir = null;                         // la app lo usa para subir el PDF de cada albarán
+    this.sincronizar = async () => {
+      if (subiendo || !pend.length) return { subidos: [], conflictos: pend.filter(x => x.conflicto).length };
+      subiendo = true;
+      const subidos = [];
+      try {
+        for (const x of [...pend].sort((a, b) => a.numero - b.numero)) {
+          if (x.conflicto) continue;
+          try {
+            const a = await red(() => base.crearAlbaranConNumero(x.p, x.numero));
+            pend = pend.filter(y => y !== x); guardarPend();
+            cache.sig[x.anio] = Math.max(cache.sig[x.anio] || 0, a.numero + 1); guardarCache();
+            subidos.push(a);
+            if (self.alSubir) try { await self.alSubir(a); } catch (e) { /* el PDF se puede volver a subir luego */ }
+          } catch (e) {
+            if (e.sinRed) break;
+            if (/NUMERO_OCUPADO/.test(e.original || e.message)) { x.conflicto = true; guardarPend(); }
+            else throw e;
+          }
+        }
+      } finally { subiendo = false; avisar(); }
+      return { subidos, conflictos: pend.filter(x => x.conflicto).length };
+    };
+    // número ocupado: se sube con el siguiente libre (hay que volver a imprimirlo)
+    this.subirConNuevoNumero = async numeroLocal => {
+      const x = pend.find(y => y.numero === numeroLocal);
+      if (!x) throw new Error('Ese albarán ya no está pendiente.');
+      const a = await red(() => base.crearAlbaran(x.p));
+      pend = pend.filter(y => y !== x); guardarPend();
+      cache.sig[a.anio] = Math.max(cache.sig[a.anio] || 0, a.numero + 1); guardarCache(); avisar();
+      return a;
+    };
+  }
+
   window.crearBackend = function () {
     const prueba = window.FORZAR_PRUEBA || /[?&]prueba\b/.test(location.search) || !CONFIG.SUPABASE_URL || !window.supabase;
-    return prueba ? new BackendPrueba() : new BackendSupabase(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+    return new ConCache(prueba ? new BackendPrueba() : new BackendSupabase(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY));
   };
+  window.esErrorRed = esErrorRed;
   window.errorLegible = errorLegible;
 })();
