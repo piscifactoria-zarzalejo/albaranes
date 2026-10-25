@@ -164,6 +164,7 @@
         <div class="acciones">
           <button class="btn" id="b-imprimir-sel">🖨 Imprimir</button>
           <button class="btn" id="b-pdf-sel">Guardar PDF</button>
+          <button class="btn" id="b-excel-sel">Exportar a Excel</button>
           <button class="btn" id="b-enviados">Marcar enviados a asesoría</button>
           <button class="btn enlace" id="b-quitar-sel">Quitar selección</button>
         </div>
@@ -227,10 +228,22 @@
     $('#f-anio').onchange = e => { ST.anio = Number(e.target.value); ST.sel.clear(); verLista(); };
     $('#b-quitar-sel').onclick = () => { ST.sel.clear(); pintar(); };
 
-    $('#b-exportar').onclick = e => ocupado(e.target, async () => {
-      const todos = await B.albaranes(null);
-      exportarExcel(todos.sort((x, y) => x.numero - y.numero), 'albaranes_todos_' + U.hoy() + '.xlsx');
-    });
+    $('#b-exportar').onclick = async e => {
+      const escribir = await ARCHIVOS.pedirDestino('albaranes_todos_' + U.hoy() + '.xlsx', 'Libro de Excel', XLSX_MIME, '.xlsx');
+      if (!escribir) return;
+      ocupado(e.target, async () => {
+        const todos = await B.albaranes(null);
+        const n = await escribir(libroExcel(todos.sort((x, y) => x.numero - y.numero)));
+        aviso(`Excel guardado: ${n} (${todos.length} albaranes)`);
+      });
+    };
+    $('#b-excel-sel').onclick = async e => {
+      const l = objetivo().slice().sort((x, y) => x.numero - y.numero);
+      if (!l.length) return aviso('No hay albaranes para exportar.', 'info');
+      const escribir = await ARCHIVOS.pedirDestino(nombreExcel(l), 'Libro de Excel', XLSX_MIME, '.xlsx');
+      if (!escribir) return;
+      ocupado(e.target, async () => { const n = await escribir(libroExcel(l)); aviso(`Excel guardado: ${n} (${l.length} albaranes)`); });
+    };
 
     $('#b-imprimir-sel').onclick = async e => {
       const l = objetivo().filter(a => a.estado === 'activo');
@@ -295,8 +308,14 @@
     return s;
   }
 
-  function exportarExcel(lista, nombreArchivo) {
-    if (!lista.length) return aviso('No hay albaranes en la lista para exportar.', 'info');
+  const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  // nombre propuesto: si todos son del mismo mes → albaranes_OCTUBRE_2026.xlsx
+  function nombreExcel(l) {
+    const meses = new Set(l.map(a => String(a.fecha).slice(0, 7)));
+    if (meses.size === 1) { const [y, m] = [...meses][0].split('-'); return `albaranes_${U.MESES[Number(m) - 1]}_${y}.xlsx`; }
+    return `albaranes_${l[0].numero}_a_${l[l.length - 1].numero}.xlsx`;
+  }
+  function libroExcel(lista) {
     const cab = lista.map(a => ({
       'Nº albarán': a.numero, 'Fecha': U.fechaLarga(a.fecha), 'Año': Number(String(a.fecha).slice(0, 4)), 'Mes': U.MESES[Number(String(a.fecha).slice(5, 7)) - 1], 'Nº pedido': a.pedido || '',
       'Cód. cliente': a.cliente?.codigo ?? '', 'Cliente': a.cliente?.nombre || '', 'CIF/NIF': a.cliente?.cif || '',
@@ -321,7 +340,7 @@
     h2['!cols'] = [10, 11, 6, 11, 40, 9, 30, 20, 10, 10, 8, 9, 13, 12, 18, 14].map(w => ({ wch: w }));
     XLSX.utils.book_append_sheet(wb, h1, 'Albaranes');
     XLSX.utils.book_append_sheet(wb, h2, 'Líneas');
-    XLSX.writeFile(wb, nombreArchivo || `albaranes_${ST.anio}.xlsx`);
+    return new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: XLSX_MIME });
   }
 
   // ══════════════════════════════════════════════════════
@@ -442,7 +461,7 @@
       f = JSON.parse(JSON.stringify(original));
     } else if (copiaDe) {
       const o = await B.albaran(copiaDe);
-      f = { fecha: U.hoy(), pedido: o.pedido, cliente_id: o.cliente_id, cliente: clientePorId(o.cliente_id) || o.cliente, observaciones: o.observaciones, precinto: '', descuento: o.descuento, lineas: JSON.parse(JSON.stringify(o.lineas)) };
+      f = { fecha: U.hoy(), pedido: '', cliente_id: o.cliente_id, cliente: clientePorId(o.cliente_id) || o.cliente, observaciones: o.observaciones, precinto: '', descuento: o.descuento, lineas: JSON.parse(JSON.stringify(o.lineas)) };
     } else {
       f = { fecha: U.hoy(), pedido: '', cliente_id: null, cliente: null, observaciones: '', precinto: '', descuento: 0, lineas: [] };
     }
@@ -454,6 +473,11 @@
 
     const lotesUsados = await lotesRecientes();
     const numPrevisto = id ? null : await B.contador(Number(f.fecha.slice(0, 4))).catch(() => null);
+    // nº de pedido automático (solo en albaranes nuevos)
+    const cfgPedido = id ? null : await B.pedido().catch(() => null);
+    const pedidoSugerido = () => cfgPedido ? U.pedidoTexto(cfgPedido, (f.fecha || U.hoy()).slice(0, 4)) : '';
+    let pedidoAuto = !id && !!cfgPedido;
+    if (pedidoAuto) f.pedido = pedidoSugerido();
 
     vista().innerHTML = `
       <div class="barra-titulo">
@@ -471,7 +495,8 @@
             <h2>Datos del albarán</h2>
             <div class="campos-2">
               <label>Fecha<input type="date" name="fecha" value="${esc(f.fecha)}" required></label>
-              <label>Nº pedido<input name="pedido" value="${esc(f.pedido || '')}"></label>
+              <label>Nº pedido<input name="pedido" value="${esc(f.pedido || '')}" required>
+                <small id="ped-info" class="ped-info"></small></label>
               <label>Precinto Nº<input name="precinto" value="${esc(f.precinto || '')}"></label>
               <label>Descuento %<input name="descuento" inputmode="decimal" value="${esc(f.descuento)}" placeholder="0"></label>
             </div>
@@ -560,7 +585,7 @@
     function pintarLineas() {
       $('#zona-lineas').innerHTML = `
         <div class="lineas">
-          <div class="linea linea-cab"><span>Producto</span><span>Kilos</span><span>Unidades</span><span>Talla cm</span><span>Precio</span><span>Lote</span><span>Estanque</span><span class="num">Total</span><span></span></div>
+          <div class="linea linea-cab"><span>Producto</span><span>Kilos</span><span>Unidades</span><span title="Peso medio: kilos ÷ unidades">Peso medio</span><span>Talla cm</span><span>Precio</span><span>Lote</span><span>Estanque</span><span class="num">Total</span><span></span></div>
           ${f.lineas.map((l, i) => {
             const up = l.unidad_precio;
             const req = k => (up === 'kg' && k === 'kilos') || ((up === 'unidad' || up === 'millar_cm') && k === 'unidades') || (up === 'millar_cm' && k === 'talla_cm');
@@ -580,11 +605,12 @@
                 <small class="tenue">${l.concepto ? esc(U.UNIDADES[up]?.nombre || '') + (Number(l.iva) !== 10 ? ' · IVA ' + U.num(l.iva, 2, 0) + '%' : '') : ''}</small></label>`}
               <label><span class="solo-movil">Kilos</span><input data-k="kilos" inputmode="decimal" value="${esc(l.kilos)}" class="${req('kilos') ? 'req' : ''}"></label>
               <label><span class="solo-movil">Unidades</span><input data-k="unidades" inputmode="numeric" value="${esc(l.unidades)}" class="${req('unidades') ? 'req' : ''}"></label>
+              <div class="l-calc"><span class="solo-movil">Peso medio</span><output data-gr title="Kilos ÷ unidades (se calcula solo)">${c.gr_uni ? U.gramos(c.gr_uni) + ' g' : '—'}</output></div>
               <label><span class="solo-movil">Talla cm</span><input data-k="talla_cm" inputmode="decimal" value="${esc(l.talla_cm)}" class="${req('talla_cm') ? 'req' : ''}" ${up === 'millar_cm' ? '' : 'disabled placeholder="—"'}></label>
               <label><span class="solo-movil">Precio</span><input data-k="precio" inputmode="decimal" value="${esc(l.precio)}" class="req" placeholder="${esc(U.UNIDADES[up]?.precio || '')}"></label>
               <label><span class="solo-movil">Lote</span><input data-k="lote" list="dl-lotes" value="${esc(l.lote)}"></label>
               <label><span class="solo-movil">Estanque</span><input data-k="estanque" list="dl-estanques" value="${esc(l.estanque)}"></label>
-              <div class="num l-total"><span class="solo-movil">Total </span><b data-total>${c.total !== null ? U.eur(c.total) : '—'}</b>${c.gr_uni ? `<small class="tenue" data-gr>${U.gramos(c.gr_uni)} g/ud</small>` : '<small class="tenue" data-gr></small>'}</div>
+              <div class="num l-total"><span class="solo-movil">Total </span><b data-total>${c.total !== null ? U.eur(c.total) : '—'}</b></div>
               <button type="button" class="btn-quitar" data-quitar title="Quitar línea" aria-label="Quitar línea">✕</button>
             </div>`;
           }).join('')}
@@ -621,7 +647,7 @@
           l[inp.dataset.k] = inp.value; marcarSucio();
           const c = U.calcLinea(l);
           $('[data-total]', fila).textContent = c.total !== null ? U.eur(c.total) : '—';
-          $('[data-gr]', fila).textContent = c.gr_uni ? U.gramos(c.gr_uni) + ' g/ud' : '';
+          $('[data-gr]', fila).textContent = c.gr_uni ? U.gramos(c.gr_uni) + ' g' : '—';
           recalcular();
         });
         $('[data-quitar]', fila).onclick = () => {
@@ -651,6 +677,7 @@
     }
     function queFalta() {
       if (!f.cliente_id) return 'Falta elegir el cliente';
+      if (!(f.pedido || '').trim()) return 'Falta el nº de pedido';
       if (!f.fecha) return 'Falta la fecha';
       const vl = lineasValidas();
       if (!vl.length) return 'Añade al menos un producto';
@@ -661,6 +688,17 @@
 
     // ── Campos de cabecera ──
     $$('input[name],textarea[name]', form).forEach(inp => inp.addEventListener('input', () => { f[inp.name] = inp.value; marcarSucio(); recalcular(); }));
+    const pintarPedido = () => {
+      const info = $('#ped-info'); if (!info) return;
+      if (id) { info.textContent = ''; return; }
+      if (!cfgPedido) { info.textContent = 'Escribe el nº de pedido'; return; }
+      info.innerHTML = pedidoAuto ? '<span class="etq etq-verde">Automático</span> Si el cliente tiene su nº de pedido, escríbelo encima.'
+        : `<span class="etq etq-azul">Del cliente</span> <button type="button" class="enlace" id="b-ped-auto">Volver a poner el automático (${esc(pedidoSugerido())})</button>`;
+      const b = $('#b-ped-auto'); if (b) b.onclick = () => { pedidoAuto = true; f.pedido = pedidoSugerido(); $('input[name=pedido]', form).value = f.pedido; pintarPedido(); recalcular(); };
+    };
+    $('input[name=pedido]', form).addEventListener('input', e => { pedidoAuto = !!cfgPedido && !id && e.target.value.trim() === pedidoSugerido(); pintarPedido(); });
+    $('input[name=fecha]', form).addEventListener('change', () => { if (pedidoAuto) { f.pedido = pedidoSugerido(); $('input[name=pedido]', form).value = f.pedido; } });
+    pintarPedido();
     if (!id) $('input[name=fecha]', form).addEventListener('change', async e => {
       const anio = Number((e.target.value || '').slice(0, 4));
       if (anio > 2000) { const n = await B.contador(anio).catch(() => null); $('#num-previsto').textContent = n || ''; }
@@ -682,12 +720,14 @@
         const c = U.calcAlbaran(vl, f.descuento, f.cliente.regimen_iva);
         const p = {
           fecha: f.fecha, pedido: (f.pedido || '').trim(), cliente_id: f.cliente_id, cliente: limpiarCliente(f.cliente),
+          pedido_auto: !id && pedidoAuto, pedido_n: !id && pedidoAuto ? cfgPedido.siguiente : null,
           observaciones: (f.observaciones || '').trim(), precinto: (f.precinto || '').trim(), descuento: c.descuento,
           consumo_preferente: null, lineas: vl, desglose_iva: c.desglose_iva,
           kilos: c.kilos, unidades: c.unidades, suma: c.suma, base: c.base, iva: c.iva, total: c.total
         };
         const a = id ? await B.modificarAlbaran(id, p, original.updated_at) : await B.crearAlbaran(p);
         ST.sucio = false;
+        if (p.pedido_auto && a.pedido && a.pedido !== p.pedido) aviso(`El nº de pedido ${p.pedido} se acababa de usar en otro albarán; se ha puesto el ${a.pedido}.`, 'aviso', 9000);
         await guardarCopiasPdf(a, carpeta, id ? window.nombrePdf(original) : null);
         if (imprimir) ARCHIVOS.imprimir(window.generarPdf(a, ST.ajustes, 2).output('blob'));
         if (a.pendiente) aviso(`Albarán ${a.numero} guardado SIN CONEXIÓN en este ordenador. Se subirá solo cuando vuelva internet.`, 'aviso', 9000);
@@ -891,6 +931,7 @@
     const sig = await B.contador(anio);
     const carpeta = ARCHIVOS.soportado() ? await ARCHIVOS.nombreCarpeta() : null;
     const E = ST.ajustes.empresa || {};
+    const ped = await B.pedido().catch(() => ({ prefijo: 'B', siguiente: 1 }));
     vista().innerHTML = `
       <div class="barra-titulo"><h1>Ajustes</h1></div>
       <div class="ajustes-rejilla">
@@ -909,6 +950,23 @@
           <p class="tenue peq">Solo para ajustar al empezar o cambiar de año. Si pones un número que ya existe, la app usa el siguiente libre.</p>
           <button class="btn" id="b-sig">Guardar numeración</button>
         </section>
+        <section class="tarjeta">
+          <h2>Número de pedido</h2>
+          <p>El próximo pedido automático será el <b id="ped-ejemplo">${esc(U.pedidoTexto(ped, anio))}</b>.</p>
+          <div class="campos-2">
+            <label>Letra<input id="a-ped-pre" value="${esc(ped.prefijo ?? 'B')}" maxlength="3"></label>
+            <label>Siguiente número<input id="a-ped-sig" inputmode="numeric" value="${esc(ped.siguiente ?? 1)}"></label>
+          </div>
+          <p class="tenue peq">Formato: letra + año + número de 4 cifras (B260081). El año sale de la fecha del albarán. Cuando se escribe el nº de pedido del cliente, este contador no avanza.</p>
+          <button class="btn" id="b-ped">Guardar nº de pedido</button>
+        </section>
+        <section class="tarjeta">
+          <h2>Sesión</h2>
+          <p>Has entrado como <b>${esc(ST.usuario)}</b>.</p>
+          ${B.modo === 'prueba' ? `<p class="tenue peq">Modo prueba: los datos se guardan solo en este navegador.</p>
+            <label class="check"><input type="checkbox" id="a-sinred" ${(() => { try { return localStorage.getItem('alb-simular-sin-red') === '1'; } catch (e) { return false; } })() ? 'checked' : ''}> Simular que no hay internet (para probar)</label>
+            <div class="fila-botones"><button class="btn btn-peligro-borde" id="b-reset">Borrar datos de prueba</button></div>` : '<button class="btn" id="b-salir">Cerrar sesión</button>'}
+        </section>
         <section class="tarjeta span2">
           <h2>Datos de la empresa en el albarán</h2>
           <form id="f-emp" class="campos-form">
@@ -922,13 +980,6 @@
             <button class="btn btn-primario">Guardar datos de empresa</button>
           </form>
         </section>
-        <section class="tarjeta">
-          <h2>Sesión</h2>
-          <p>Has entrado como <b>${esc(ST.usuario)}</b>.</p>
-          ${B.modo === 'prueba' ? `<p class="tenue peq">Modo prueba: los datos se guardan solo en este navegador.</p>
-            <label class="check"><input type="checkbox" id="a-sinred" ${(() => { try { return localStorage.getItem('alb-simular-sin-red') === '1'; } catch (e) { return false; } })() ? 'checked' : ''}> Simular que no hay internet (para probar)</label>
-            <div class="fila-botones"><button class="btn btn-peligro-borde" id="b-reset">Borrar datos de prueba</button></div>` : '<button class="btn" id="b-salir">Cerrar sesión</button>'}
-        </section>
       </div>`;
     if ($('#b-carpeta')) $('#b-carpeta').onclick = async () => { try { const n = await ARCHIVOS.elegirCarpeta(); aviso('Carpeta elegida: ' + n); verAjustes(); } catch (e) { if (e.name !== 'AbortError') aviso(String(e.message || e), 'error'); } };
     if ($('#b-olvidar')) $('#b-olvidar').onclick = async () => { await ARCHIVOS.olvidarCarpeta(); verAjustes(); };
@@ -937,6 +988,14 @@
       if (!n || String(n).slice(0, 4) !== String(anio)) return aviso(`El número debe empezar por ${anio} (por ejemplo ${anio}0082)`, 'error', 6000);
       if (!await confirmar('Cambiar numeración', `El próximo albarán será el <b>${n}</b>. ¿Seguro?`, 'Cambiar')) return;
       ocupado(e.target, async () => { await B.fijarContador(anio, n); aviso('Numeración cambiada'); verAjustes(); });
+    };
+    const ejPed = () => { $('#ped-ejemplo').textContent = U.pedidoTexto({ prefijo: $('#a-ped-pre').value.trim().toUpperCase(), siguiente: parseInt($('#a-ped-sig').value, 10) || 1 }, anio); };
+    $('#a-ped-pre').oninput = ejPed; $('#a-ped-sig').oninput = ejPed;
+    $('#b-ped').onclick = e => {
+      const prefijo = $('#a-ped-pre').value.trim().toUpperCase(), siguiente = parseInt($('#a-ped-sig').value, 10);
+      if (!prefijo) return aviso('Pon una letra para el nº de pedido', 'error');
+      if (!(siguiente > 0 && siguiente < 10000)) return aviso('El número debe estar entre 1 y 9999', 'error');
+      ocupado(e.target, async () => { await B.guardarAjuste('pedido', { prefijo, siguiente }); aviso('Nº de pedido guardado: el próximo será ' + U.pedidoTexto({ prefijo, siguiente }, anio)); });
     };
     $('#f-emp').onsubmit = e => {
       e.preventDefault(); const fd = new FormData(e.target);

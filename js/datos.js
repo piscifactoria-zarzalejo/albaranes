@@ -59,6 +59,7 @@
       return r ? Number(r.siguiente) : anio * 10000 + 1;
     };
     this.fijarContador = async (anio, sig) => ok(await sb.rpc('fijar_contador', { p_anio: anio, p_siguiente: sig }));
+    this.pedido = async () => { const r = ok(await sb.from('ajustes').select('valor').eq('clave', 'pedido').maybeSingle()); return r ? r.valor : { prefijo: 'B', siguiente: 1 }; };
 
     this.clientes = async () => ok(await sb.from('clientes').select('*').order('nombre').range(0, 9999));
     this.guardarCliente = async c => {
@@ -112,7 +113,7 @@
         const S = window.SEMILLA;
         let id = 1;
         db = {
-          ajustes: { empresa: S.ajustes.empresa },
+          ajustes: { empresa: S.ajustes.empresa, pedido: { prefijo: 'B', siguiente: 1 } },
           contadores: { 2026: S.siguiente },
           clientes: S.clientes.map(c => ({ id: id++, ...c })),
           productos: S.productos.map((p, i) => ({ id: i + 1, ...p })),
@@ -139,6 +140,12 @@
     this.guardarAjuste = async (k, v) => { db.ajustes[k] = v; guardar(); };
     this.contador = async anio => db.contadores[anio] || anio * 10000 + 1;
     this.fijarContador = async (anio, sig) => { db.contadores[anio] = sig; guardar(); };
+    this.pedido = async () => copia(db.ajustes.pedido || { prefijo: 'B', siguiente: 1 });
+    const pedidoAuto = p => {                     // igual que en el servidor
+      if (!p.pedido_auto) return p.pedido;
+      const c = db.ajustes.pedido || { prefijo: 'B', siguiente: 1 };
+      const t = U.pedidoTexto(c, p.fecha.slice(0, 4)); c.siguiente++; db.ajustes.pedido = c; return t;
+    };
     this.clientes = async () => copia(db.clientes).sort((a, b) => a.nombre.localeCompare(b.nombre));
     this.guardarCliente = async c => {
       if (db.clientes.some(x => x.codigo === c.codigo && x.id !== c.id)) throw new Error('Ya existe un cliente con ese código.');
@@ -160,6 +167,7 @@
       const max = Math.max(0, ...db.albaranes.filter(a => a.anio === anio).map(a => a.numero));
       if (max >= num) num = max + 1;
       db.contadores[anio] = num + 1;
+      p = { ...p, pedido: pedidoAuto(p) };
       const a = { id: db.seq.alb++, numero: num, anio, estado: 'activo', motivo_anulacion: null, enviado_asesoria_at: null, modificado_tras_envio: false, creado_por: yo, modificado_por: yo, created_at: ahora(), updated_at: ahora() };
       CAMPOS.forEach(k => a[k] = p[k] ?? null);
       db.albaranes.push(a); hist(a, 'creado'); guardar(); return copia(a);
@@ -168,6 +176,7 @@
       if (db.albaranes.some(x => x.numero === numero)) throw new Error('NUMERO_OCUPADO');
       const anio = Number(p.fecha.slice(0, 4));
       db.contadores[anio] = Math.max(db.contadores[anio] || 0, numero + 1);
+      if (p.pedido_auto && p.pedido_n) { const c = db.ajustes.pedido || { prefijo: 'B', siguiente: 1 }; c.siguiente = Math.max(c.siguiente, p.pedido_n + 1); db.ajustes.pedido = c; }
       const a = { id: db.seq.alb++, numero, anio, estado: 'activo', motivo_anulacion: null, enviado_asesoria_at: null, modificado_tras_envio: false, creado_por: yo, modificado_por: yo, created_at: ahora(), updated_at: ahora() };
       CAMPOS.forEach(k => a[k] = p[k] ?? null);
       db.albaranes.push(a); hist(a, 'creado'); guardar(); return copia(a);
@@ -256,6 +265,22 @@
       catch (e) { if (e.sinRed) return siguienteLocal(anio); throw e; }
     };
     this.fijarContador = async (anio, sig) => { await red(() => base.fijarContador(anio, sig)); cache.sig[anio] = sig; guardarCache(); };
+    // tras usar un pedido automático, el siguiente que se recuerda sin conexión avanza
+    const anotarPedido = (p, a) => {
+      if (!p.pedido_auto) return;
+      const n = Math.max(p.pedido_n || 0, parseInt(String(a.pedido || '').slice(-4), 10) || 0);
+      const c = cache.pedido || (cache.ajustes && cache.ajustes.pedido) || { prefijo: 'B', siguiente: 1 };
+      cache.pedido = { ...c, siguiente: Math.max(c.siguiente || 1, n + 1) };
+    };
+    // siguiente nº de pedido (teniendo en cuenta los hechos sin conexión)
+    this.pedido = async () => {
+      let v;
+      try { v = await red(() => base.pedido()); cache.pedido = v; guardarCache(); }
+      catch (e) { if (!e.sinRed) throw e; v = cache.pedido || (cache.ajustes && cache.ajustes.pedido) || { prefijo: 'B', siguiente: 1 }; }
+      v = { ...v };
+      for (const x of pend) if (x.p.pedido_auto && x.p.pedido_n >= v.siguiente) v.siguiente = x.p.pedido_n + 1;
+      return v;
+    };
 
     // ── albaranes ──
     const comoAlbaran = x => ({ ...x.p, id: -x.numero, numero: x.numero, anio: x.anio, estado: 'activo', pendiente: true,
@@ -279,7 +304,8 @@
       const anio = Number(p.fecha.slice(0, 4));
       try {
         const a = await red(() => base.crearAlbaran(p));
-        cache.sig[anio] = Math.max(cache.sig[anio] || 0, a.numero + 1); guardarCache();
+        cache.sig[anio] = Math.max(cache.sig[anio] || 0, a.numero + 1);
+        anotarPedido(p, a); guardarCache();
         return a;
       } catch (e) {
         if (!e.sinRed) throw e;
@@ -305,7 +331,7 @@
           try {
             const a = await red(() => base.crearAlbaranConNumero(x.p, x.numero));
             pend = pend.filter(y => y !== x); guardarPend();
-            cache.sig[x.anio] = Math.max(cache.sig[x.anio] || 0, a.numero + 1); guardarCache();
+            cache.sig[x.anio] = Math.max(cache.sig[x.anio] || 0, a.numero + 1); anotarPedido(x.p, a); guardarCache();
             subidos.push(a);
             if (self.alSubir) try { await self.alSubir(a); } catch (e) { /* el PDF se puede volver a subir luego */ }
           } catch (e) {
@@ -323,7 +349,7 @@
       if (!x) throw new Error('Ese albarán ya no está pendiente.');
       const a = await red(() => base.crearAlbaran(x.p));
       pend = pend.filter(y => y !== x); guardarPend();
-      cache.sig[a.anio] = Math.max(cache.sig[a.anio] || 0, a.numero + 1); guardarCache(); avisar();
+      cache.sig[a.anio] = Math.max(cache.sig[a.anio] || 0, a.numero + 1); anotarPedido(x.p, a); guardarCache(); avisar();
       return a;
     };
   }

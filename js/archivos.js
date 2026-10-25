@@ -45,6 +45,20 @@
 
   A.borrarDeCarpeta = async (h, nombre) => { try { await h.removeEntry(nombre); } catch (e) { /* no existía */ } };
 
+  // Pregunta dónde guardar un archivo (ventana de Windows/Mac "Guardar como").
+  // Devuelve una función para escribirlo, o null si el usuario cancela.
+  // Llamarla NADA MÁS pulsar el botón (el navegador lo exige).
+  A.pedirDestino = async (nombre, descripcion, mime, ext) => {
+    if ('showSaveFilePicker' in window) {
+      try {
+        const h = await window.showSaveFilePicker({ suggestedName: nombre, id: 'albaranes-excel', startIn: 'documents',
+          types: [{ description: descripcion, accept: { [mime]: [ext] } }] });
+        return async blob => { const w = await h.createWritable(); await w.write(blob); await w.close(); return h.name; };
+      } catch (e) { if (e.name === 'AbortError') return null; }
+    }
+    return async blob => { A.descargar(blob, nombre); return nombre; };   // navegador sin "Guardar como": va a Descargas
+  };
+
   A.descargar = (blob, nombre) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = nombre;

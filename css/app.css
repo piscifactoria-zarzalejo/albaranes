@@ -172,6 +172,8 @@ textarea { resize: vertical; }
 .etq-verde { background: var(--verde-claro); color: var(--verde); border-color: transparent; }
 .etq-azul { background: var(--azul-claro); color: var(--azul); border-color: transparent; }
 h1 .etq { font-size: .8rem; }
+.ped-info { font-weight: 400; color: var(--tenue); font-size: .78rem; display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; min-height: 1.3rem; }
+.ped-info .enlace { font-size: .78rem; padding: 0; }
 .num-previsto { color: var(--primario); font-variant-numeric: tabular-nums; margin-left: .3rem; }
 
 /* Editor */
@@ -185,10 +187,12 @@ h1 .etq { font-size: .8rem; }
 .cliente-sel .fuerte { font-size: 1.05rem; }
 
 .lineas { display: flex; flex-direction: column; gap: .35rem; margin-bottom: .8rem; }
-.linea { display: grid; grid-template-columns: minmax(200px, 2.4fr) .9fr .9fr .75fr .9fr 1.2fr 1fr 1fr 34px; gap: .45rem; align-items: start; }
+.linea { display: grid; grid-template-columns: minmax(190px, 2.3fr) .85fr .85fr .85fr .7fr .85fr 1.15fr 1fr 1fr 34px; gap: .45rem; align-items: start; }
 .linea label { color: var(--texto); font-weight: 400; }
 .linea small { font-size: .75rem; }
 .linea-cab span { font-size: .75rem; text-transform: uppercase; color: var(--tenue); font-weight: 600; letter-spacing: .03em; }
+.l-calc output { display: flex; align-items: center; justify-content: flex-end; height: 40px; padding: 0 .6rem; border-radius: 7px;
+  background: var(--fondo); border: 1px dashed var(--borde); color: var(--texto); font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
 .l-total { padding-top: .55rem; display: flex; flex-direction: column; }
 .l-libre { display: flex; flex-direction: column; gap: .3rem; }
 .l-libre-op { display: flex; gap: .5rem; align-items: center; }

@@ -46,6 +46,8 @@
   };
   U.eur = n => (n === null || n === undefined || n === '' || isNaN(n)) ? '' : U.num(n, 2) + ' €';
   U.kg = n => U.num(n, 2, 0);
+  // nº de pedido: prefijo + año (2 cifras) + 4 cifras → B260081
+  U.pedidoTexto = (cfg, anio) => (cfg?.prefijo ?? 'B') + String(anio).slice(-2) + String(cfg?.siguiente ?? 1).padStart(4, '0');
   // gramos por unidad: sin decimales a partir de 10 g (trucha); con 2 decimales en alevines pequeños
   U.gramos = g => (g === null || g === undefined) ? '' : (g >= 10 ? U.num(g, 0) : U.num(g, 2));
 
