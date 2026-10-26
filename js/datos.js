@@ -92,6 +92,7 @@
     this.anularAlbaran = async (id, motivo) => ok(await sb.rpc('anular_albaran', { p_id: id, p_motivo: motivo || '' }));
     this.reactivarAlbaran = async id => ok(await sb.rpc('reactivar_albaran', { p_id: id }));
     this.marcarEnviados = async ids => ok(await sb.rpc('marcar_enviados', { p_ids: ids }));
+    this.marcarEmail = async id => ok(await sb.rpc('marcar_email', { p_id: id }));
     this.historial = async id => ok(await sb.from('historial').select('id,accion,usuario,fecha,antes,despues').eq('albaran_id', id).order('fecha'));
 
     this.subirPdf = async (anio, numero, blob) => {
@@ -205,6 +206,7 @@
       guardar(); return ids.length;
     };
     this.historial = async id => copia(db.historial.filter(h => h.albaran_id === Number(id)));
+    this.marcarEmail = async id => { const a = db.albaranes.find(x => x.id === id); a.email_enviado_at = ahora(); a.email_enviado_por = yo; hist(a, 'email'); guardar(); return copia(a); };
     this.subirPdf = async () => null;
   }
 
@@ -315,7 +317,7 @@
         return comoAlbaran(x);
       }
     };
-    ['modificarAlbaran', 'anularAlbaran', 'reactivarAlbaran', 'marcarEnviados', 'guardarCliente', 'guardarProducto', 'guardarAjuste', 'subirPdf']
+    ['modificarAlbaran', 'anularAlbaran', 'reactivarAlbaran', 'marcarEnviados', 'marcarEmail', 'guardarCliente', 'guardarProducto', 'guardarAjuste', 'subirPdf']
       .forEach(f => { self[f] = (...args) => red(() => base[f](...args)); });
 
     // ── subir lo pendiente ──

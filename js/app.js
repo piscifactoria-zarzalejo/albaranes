@@ -304,7 +304,8 @@
     if (a.pendiente) return a.conflicto ? '<span class="etq etq-roja">Número ya usado</span>' : '<span class="etq etq-naranja">Sin conexión · pendiente de subir</span>';
     if (a.estado === 'anulado') s += '<span class="etq etq-roja">Anulado</span>';
     if (a.modificado_tras_envio) s += '<span class="etq etq-naranja">Modificado tras envío</span>';
-    else if (a.enviado_asesoria_at) s += '<span class="etq etq-verde">Enviado</span>';
+    else if (a.enviado_asesoria_at) s += '<span class="etq etq-verde">Enviado asesoría</span>';
+    if (a.email_enviado_at && a.estado !== 'anulado') s += `<span class="etq etq-azul" title="Enviado por email el ${U.fechaHora(a.email_enviado_at)}${a.email_enviado_por ? ' por ' + a.email_enviado_por : ''}">✉ Email</span>`;
     return s;
   }
 
@@ -325,7 +326,8 @@
       'IVA': a.cliente?.regimen_iva && a.cliente.regimen_iva !== 'nacional' ? 'Exento' : (a.desglose_iva || []).map(g => g.tipo + '%').join(' / '),
       'Importe IVA': Number(a.iva), 'Total': Number(a.total), 'Precinto': a.precinto || '', 'Observaciones': a.observaciones || '',
       'Enviado asesoría': a.enviado_asesoria_at ? U.fechaHora(a.enviado_asesoria_at) : '',
-      'Modificado tras envío': a.modificado_tras_envio ? 'SÍ' : ''
+      'Modificado tras envío': a.modificado_tras_envio ? 'SÍ' : '',
+      'Enviado por email': a.email_enviado_at ? U.fechaHora(a.email_enviado_at) : ''
     }));
     const lin = lista.flatMap(a => (a.lineas || []).map(l => ({
       'Nº albarán': a.numero, 'Fecha': U.fechaLarga(a.fecha), 'Año': Number(String(a.fecha).slice(0, 4)), 'Mes': U.MESES[Number(String(a.fecha).slice(5, 7)) - 1], 'Cliente': a.cliente?.nombre || '',
@@ -359,6 +361,7 @@
           <p class="tenue">${esc(a.cliente?.nombre)} · ${U.fechaLarga(a.fecha)} · ${U.eur(a.total)}</p></div>
         <div class="acciones">
           ${anulado ? '' : '<button class="btn btn-primario btn-grande" id="b-imprimir">🖨 Imprimir (2 copias)</button>'}
+          ${anulado || pendiente ? '' : `<button class="btn" id="b-email">✉ ${a.email_enviado_at ? 'Volver a enviar' : 'Enviar por email'}</button>`}
           <button class="btn" id="b-descargar">Descargar PDF</button>
           ${anulado || pendiente ? '' : `<a class="btn" href="#/editar/${a.id}">Modificar</a>`}
           <a class="btn" href="#/nuevo/copia/${a.id}" title="Crea un albarán nuevo con los mismos datos">Duplicar</a>
@@ -369,6 +372,7 @@
       ${pendiente && !a.conflicto ? '<div class="banda banda-naranja">Hecho <b>sin conexión</b>. Está guardado en este ordenador y se subirá solo cuando vuelva internet. Hasta entonces no se puede modificar ni anular.</div>' : ''}
       ${a.conflicto ? `<div class="banda banda-roja">No se ha podido subir: el número <b>${a.numero}</b> ya lo tiene otro albarán (se hizo otro desde otro ordenador mientras no había conexión).<br>
         <button class="btn btn-peligro" id="b-renumerar" style="margin-top:.5rem">Subir con el siguiente número libre</button> <span class="peq">Después habrá que imprimirlo de nuevo y cambiar el papel.</span></div>` : ''}
+      ${a.email_enviado_at && !anulado ? `<p class="peq tenue" style="margin-top:-.4rem">✉ Enviado por email el ${U.fechaHora(a.email_enviado_at)}${a.email_enviado_por ? ' · ' + esc(a.email_enviado_por) : ''}</p>` : ''}
       ${a.modificado_tras_envio ? '<div class="banda banda-naranja">Se modificó <b>después de enviarlo a la asesoría</b>. Recuerda mandarles la versión nueva.</div>' : ''}
       <div class="ver-rejilla">
         ${matchMedia('(max-width: 1000px), (pointer: coarse)').matches
@@ -380,6 +384,7 @@
         </div>
       </div>`;
     const b2 = () => window.generarPdf(a, ST.ajustes, 2).output('blob');
+    if ($('#b-email')) $('#b-email').onclick = ev => enviarEmail(a, blob, ev.currentTarget);
     if ($('#b-renumerar')) $('#b-renumerar').onclick = async ev => {
       if (!await confirmar('Cambiar el número', `El albarán ${a.numero} se subirá con el <b>siguiente número libre</b>. Se imprimirá de nuevo para que cambies el papel que se entregó.`, 'Subir con número nuevo', true)) return;
       const carpeta = await ARCHIVOS.prepararPermiso();
@@ -411,7 +416,36 @@
       ocupado(ev.target, async () => { await B.reactivarAlbaran(a.id); location.hash = '#/editar/' + a.id; });
     };
   }
-  const textoAccion = a => ({ creado: 'Creado', modificado: 'Modificado', anulado: 'Anulado', reactivado: 'Reactivado para rehacer', enviado: 'Marcado como enviado a asesoría', 'creado sin conexión': 'Creado sin conexión (subido después)' }[a] || a);
+  // ── Enviar por email: abre Outlook / Correo con el PDF adjunto ──
+  async function enviarEmail(a, blob, btn) {
+    const nombre = window.nombrePdf(a);
+    const archivo = new File([blob], nombre, { type: 'application/pdf' });
+    const cli = a.cliente?.nombre || '';
+    const asunto = `Albarán ${a.numero}${cli ? ' - ' + cli : ''}`;
+    const cuerpo = `Buenos días:\n\nLes adjuntamos el albarán ${a.numero} del ${U.fechaLarga(a.fecha)}${a.pedido ? ' (pedido ' + a.pedido + ')' : ''}.\n\nUn saludo,\n${ST.ajustes.empresa?.nombre || ''}`;
+    const email = '';   // el destinatario lo pone quien envía (la oficina de facturas)
+    let enviado = false;
+    if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+      // ventana "Compartir" de Windows / Mac: elegir Outlook o Correo
+      try { await navigator.share({ files: [archivo], title: asunto, text: cuerpo }); enviado = true; }
+      catch (e) { if (e.name === 'AbortError') { aviso('No se ha enviado el email.', 'info'); return; } aviso('No se pudo abrir el envío: ' + (e.message || e), 'error', 7000); return; }
+    } else {
+      // navegador sin "Compartir archivos": se descarga el PDF y se abre un correo nuevo para adjuntarlo
+      ARCHIVOS.descargar(blob, nombre);
+      const enlace = document.createElement('a');
+      enlace.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo + '\n\n(Adjuntar el archivo ' + nombre + ' de la carpeta Descargas)')}`;
+      enlace.click();
+      enviado = await confirmar('¿Has enviado el correo?', `Se ha descargado <b>${esc(nombre)}</b> y se ha abierto un correo nuevo. Adjunta el PDF, envíalo y después pulsa <b>Sí, enviado</b>.`, 'Sí, enviado');
+    }
+    if (!enviado) return;
+    await ocupado(btn, async () => {
+      await B.marcarEmail(a.id);
+      aviso(`Albarán ${a.numero} marcado como enviado por email.`);
+      verAlbaran(a.id);
+    });
+  }
+
+  const textoAccion = a => ({ creado: 'Creado', modificado: 'Modificado', anulado: 'Anulado', reactivado: 'Reactivado para rehacer', enviado: 'Marcado como enviado a asesoría', 'creado sin conexión': 'Creado sin conexión (subido después)', email: 'Enviado por email' }[a] || a);
   function diferencias(antes, desp) {
     if (!antes || !desp) return '';
     const d = [];
