@@ -416,28 +416,52 @@
       ocupado(ev.target, async () => { await B.reactivarAlbaran(a.id); location.hash = '#/editar/' + a.id; });
     };
   }
-  // ── Enviar por email: abre Outlook / Correo con el PDF adjunto ──
+  // ── Enviar por email ──
+  //  Se crea un correo (.eml) ya preparado: PDF adjunto, asunto, texto y destinatario.
+  //  Al abrirlo, el Outlook de escritorio lo muestra como un mensaje NUEVO listo para Enviar.
+  function b64Utf8(t) { return btoa(unescape(encodeURIComponent(t))); }
+  function trocear(b64) { return b64.replace(/.{1,76}/g, '$&\r\n'); }
+  async function blobABase64(blob) {
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  async function crearEml({ para, asunto, cuerpo, nombreAdjunto, pdf }) {
+    const lim = '----=_Albaran_' + Date.now();
+    const lineas = [
+      'X-Unsent: 1',
+      para ? 'To: ' + para : 'To: ',
+      'Subject: =?UTF-8?B?' + b64Utf8(asunto) + '?=',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="' + lim + '"',
+      '',
+      '--' + lim,
+      'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      trocear(b64Utf8(cuerpo)),
+      '--' + lim,
+      'Content-Type: application/pdf; name="' + nombreAdjunto + '"',
+      'Content-Disposition: attachment; filename="' + nombreAdjunto + '"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      trocear(await blobABase64(pdf)),
+      '--' + lim + '--', ''
+    ];
+    return new Blob([lineas.join('\r\n')], { type: 'message/rfc822' });
+  }
   async function enviarEmail(a, blob, btn) {
     const nombre = window.nombrePdf(a);
-    const archivo = new File([blob], nombre, { type: 'application/pdf' });
     const cli = a.cliente?.nombre || '';
     const asunto = `Albarán ${a.numero}${cli ? ' - ' + cli : ''}`;
     const cuerpo = `Buenos días:\n\nLes adjuntamos el albarán ${a.numero} del ${U.fechaLarga(a.fecha)}${a.pedido ? ' (pedido ' + a.pedido + ')' : ''}.\n\nUn saludo,\n${ST.ajustes.empresa?.nombre || ''}`;
-    const email = '';   // el destinatario lo pone quien envía (la oficina de facturas)
-    let enviado = false;
-    if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
-      // ventana "Compartir" de Windows / Mac: elegir Outlook o Correo
-      try { await navigator.share({ files: [archivo], title: asunto, text: cuerpo }); enviado = true; }
-      catch (e) { if (e.name === 'AbortError') { aviso('No se ha enviado el email.', 'info'); return; } aviso('No se pudo abrir el envío: ' + (e.message || e), 'error', 7000); return; }
-    } else {
-      // navegador sin "Compartir archivos": se descarga el PDF y se abre un correo nuevo para adjuntarlo
-      ARCHIVOS.descargar(blob, nombre);
-      const enlace = document.createElement('a');
-      enlace.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo + '\n\n(Adjuntar el archivo ' + nombre + ' de la carpeta Descargas)')}`;
-      enlace.click();
-      enviado = await confirmar('¿Has enviado el correo?', `Se ha descargado <b>${esc(nombre)}</b> y se ha abierto un correo nuevo. Adjunta el PDF, envíalo y después pulsa <b>Sí, enviado</b>.`, 'Sí, enviado');
-    }
-    if (!enviado) return;
+    const para = (ST.ajustes.email?.para || '').split(/[;,\s]+/).filter(Boolean).join(', ');
+    const eml = await crearEml({ para, asunto, cuerpo, nombreAdjunto: nombre, pdf: blob });
+    ARCHIVOS.descargar(eml, `Albaran ${a.numero}.eml`);
+    const enviado = await confirmar('Enviar el albarán por email',
+      `Se ha descargado el correo <b>Albaran ${a.numero}.eml</b>. <b>Ábrelo</b> (en la barra de descargas del navegador) y se abrirá en Outlook con el PDF adjunto${para ? ' y la dirección puesta' : ''}. Revísalo y pulsa <b>Enviar</b>.<br><br>Cuando lo hayas enviado, pulsa <b>Sí, enviado</b> para dejarlo marcado.`,
+      'Sí, enviado');
+    if (!enviado) { aviso('No se ha marcado como enviado. Puedes volver a enviarlo cuando quieras.', 'info'); return; }
     await ocupado(btn, async () => {
       await B.marcarEmail(a.id);
       aviso(`Albarán ${a.numero} marcado como enviado por email.`);
@@ -991,6 +1015,12 @@
           <button class="btn" id="b-sig">Guardar numeración</button>
         </section>
         <section class="tarjeta">
+          <h2>Envío por email</h2>
+          <label>Enviar los albaranes a (Para)<input id="a-email-para" type="text" value="${esc(ST.ajustes.email?.para || '')}" placeholder="facturas@ejemplo.es"></label>
+          <p class="tenue peq">El correo de la oficina donde se hacen las facturas. Si son varios, sepáralos con punto y coma (;). Si lo dejas vacío, la dirección se escribe en Outlook.</p>
+          <button class="btn" id="b-email-para">Guardar correo</button>
+        </section>
+        <section class="tarjeta">
           <h2>Número de pedido</h2>
           <p>El próximo pedido automático será el <b id="ped-ejemplo">${esc(U.pedidoTexto(ped, anio))}</b>.</p>
           <div class="campos-2">
@@ -1028,6 +1058,12 @@
       if (!n || String(n).slice(0, 4) !== String(anio)) return aviso(`El número debe empezar por ${anio} (por ejemplo ${anio}0082)`, 'error', 6000);
       if (!await confirmar('Cambiar numeración', `El próximo albarán será el <b>${n}</b>. ¿Seguro?`, 'Cambiar')) return;
       ocupado(e.target, async () => { await B.fijarContador(anio, n); aviso('Numeración cambiada'); verAjustes(); });
+    };
+    $('#b-email-para').onclick = e => {
+      const para = $('#a-email-para').value.trim();
+      const malos = para.split(/[;,\s]+/).filter(Boolean).filter(x => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
+      if (malos.length) return aviso('Este correo no parece válido: ' + malos.join(', '), 'error');
+      ocupado(e.target, async () => { await B.guardarAjuste('email', { para }); ST.ajustes.email = { para }; aviso(para ? 'Los albaranes se enviarán a ' + para : 'Correo de envío borrado'); });
     };
     const ejPed = () => { $('#ped-ejemplo').textContent = U.pedidoTexto({ prefijo: $('#a-ped-pre').value.trim().toUpperCase(), siguiente: parseInt($('#a-ped-sig').value, 10) || 1 }, anio); };
     $('#a-ped-pre').oninput = ejPed; $('#a-ped-sig').oninput = ejPed;

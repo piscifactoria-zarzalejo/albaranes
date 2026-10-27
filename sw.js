@@ -3,7 +3,7 @@
 //  Siempre intenta descargar la versión más reciente; si no hay
 //  conexión (o tarda más de 4 s) usa la copia guardada en el ordenador.
 // ════════════════════════════════════════════════════════
-const CACHE = 'albaranes-v2';
+const CACHE = 'albaranes-v3';
 const ARCHIVOS = [
   './', 'index.html', 'manifest.json', 'css/app.css',
   'js/config.js', 'js/imagenes.js', 'js/semilla.js', 'js/util.js', 'js/datos.js', 'js/archivos.js', 'js/pdf.js', 'js/app.js',
