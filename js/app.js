@@ -304,8 +304,7 @@
     if (a.pendiente) return a.conflicto ? '<span class="etq etq-roja">Número ya usado</span>' : '<span class="etq etq-naranja">Sin conexión · pendiente de subir</span>';
     if (a.estado === 'anulado') s += '<span class="etq etq-roja">Anulado</span>';
     if (a.modificado_tras_envio) s += '<span class="etq etq-naranja">Modificado tras envío</span>';
-    else if (a.enviado_asesoria_at) s += '<span class="etq etq-verde">Enviado asesoría</span>';
-    if (a.email_enviado_at && a.estado !== 'anulado') s += `<span class="etq etq-azul" title="Enviado por email el ${U.fechaHora(a.email_enviado_at)}${a.email_enviado_por ? ' por ' + a.email_enviado_por : ''}">✉ Email</span>`;
+    else if (a.enviado_asesoria_at) s += `<span class="etq etq-verde" title="Enviado a la asesoría el ${U.fechaHora(a.enviado_asesoria_at)}">Enviado asesoría</span>`;
     return s;
   }
 
@@ -361,7 +360,8 @@
           <p class="tenue">${esc(a.cliente?.nombre)} · ${U.fechaLarga(a.fecha)} · ${U.eur(a.total)}</p></div>
         <div class="acciones">
           ${anulado ? '' : '<button class="btn btn-primario btn-grande" id="b-imprimir">🖨 Imprimir (2 copias)</button>'}
-          ${anulado || pendiente ? '' : `<button class="btn" id="b-email">✉ ${a.email_enviado_at ? 'Volver a enviar' : 'Enviar por email'}</button>`}
+          ${anulado || pendiente ? '' : `<button class="btn" id="b-email" title="Abre Outlook con el correo para la asesoría y el PDF adjunto">✉ ${a.enviado_asesoria_at && !a.modificado_tras_envio ? 'Volver a enviar a asesoría' : 'Enviar a asesoría'}</button>`}
+          ${anulado || pendiente || (a.enviado_asesoria_at && !a.modificado_tras_envio) ? '' : '<button class="btn" id="b-marcar-ases" title="Por si se ha enviado de otra forma">Marcar enviado a asesoría</button>'}
           <button class="btn" id="b-descargar">Descargar PDF</button>
           ${anulado || pendiente ? '' : `<a class="btn" href="#/editar/${a.id}">Modificar</a>`}
           <a class="btn" href="#/nuevo/copia/${a.id}" title="Crea un albarán nuevo con los mismos datos">Duplicar</a>
@@ -372,7 +372,7 @@
       ${pendiente && !a.conflicto ? '<div class="banda banda-naranja">Hecho <b>sin conexión</b>. Está guardado en este ordenador y se subirá solo cuando vuelva internet. Hasta entonces no se puede modificar ni anular.</div>' : ''}
       ${a.conflicto ? `<div class="banda banda-roja">No se ha podido subir: el número <b>${a.numero}</b> ya lo tiene otro albarán (se hizo otro desde otro ordenador mientras no había conexión).<br>
         <button class="btn btn-peligro" id="b-renumerar" style="margin-top:.5rem">Subir con el siguiente número libre</button> <span class="peq">Después habrá que imprimirlo de nuevo y cambiar el papel.</span></div>` : ''}
-      ${a.email_enviado_at && !anulado ? `<p class="peq tenue" style="margin-top:-.4rem">✉ Enviado por email el ${U.fechaHora(a.email_enviado_at)}${a.email_enviado_por ? ' · ' + esc(a.email_enviado_por) : ''}</p>` : ''}
+      ${a.enviado_asesoria_at && !a.modificado_tras_envio ? `<p class="peq tenue" style="margin-top:-.4rem">Enviado a la asesoría el ${U.fechaHora(a.enviado_asesoria_at)}</p>` : ''}
       ${a.modificado_tras_envio ? '<div class="banda banda-naranja">Se modificó <b>después de enviarlo a la asesoría</b>. Recuerda mandarles la versión nueva.</div>' : ''}
       <div class="ver-rejilla">
         ${matchMedia('(max-width: 1000px), (pointer: coarse)').matches
@@ -385,6 +385,9 @@
       </div>`;
     const b2 = () => window.generarPdf(a, ST.ajustes, 2).output('blob');
     if ($('#b-email')) $('#b-email').onclick = ev => enviarEmail(a, blob, ev.currentTarget);
+    if ($('#b-marcar-ases')) $('#b-marcar-ases').onclick = ev => ocupado(ev.target, async () => {
+      await B.marcarEnviados([a.id]); aviso(`Albarán ${a.numero} marcado como enviado a la asesoría.`); verAlbaran(a.id);
+    });
     if ($('#b-renumerar')) $('#b-renumerar').onclick = async ev => {
       if (!await confirmar('Cambiar el número', `El albarán ${a.numero} se subirá con el <b>siguiente número libre</b>. Se imprimirá de nuevo para que cambies el papel que se entregó.`, 'Subir con número nuevo', true)) return;
       const carpeta = await ARCHIVOS.prepararPermiso();
@@ -457,14 +460,19 @@
     const cuerpo = `Buenos días:\n\nLes adjuntamos el albarán ${a.numero} del ${U.fechaLarga(a.fecha)}${a.pedido ? ' (pedido ' + a.pedido + ')' : ''}.\n\nUn saludo,\n${ST.ajustes.empresa?.nombre || ''}`;
     const para = (ST.ajustes.email?.para || '').split(/[;,\s]+/).filter(Boolean).join(', ');
     const eml = await crearEml({ para, asunto, cuerpo, nombreAdjunto: nombre, pdf: blob });
+    // el correo se abre en Outlook (con "Abrir siempre archivos de este tipo" se abre solo)
     ARCHIVOS.descargar(eml, `Albaran ${a.numero}.eml`);
-    const enviado = await confirmar('Enviar el albarán por email',
-      `Se ha descargado el correo <b>Albaran ${a.numero}.eml</b>. <b>Ábrelo</b> (en la barra de descargas del navegador) y se abrirá en Outlook con el PDF adjunto${para ? ' y la dirección puesta' : ''}. Revísalo y pulsa <b>Enviar</b>.<br><br>Cuando lo hayas enviado, pulsa <b>Sí, enviado</b> para dejarlo marcado.`,
-      'Sí, enviado');
-    if (!enviado) { aviso('No se ha marcado como enviado. Puedes volver a enviarlo cuando quieras.', 'info'); return; }
-    await ocupado(btn, async () => {
-      await B.marcarEmail(a.id);
-      aviso(`Albarán ${a.numero} marcado como enviado por email.`);
+    // sin ventanas: una banda con el botón para marcarlo cuando se haya enviado
+    let banda = $('#banda-email');
+    if (!banda) { banda = document.createElement('div'); banda.id = 'banda-email'; banda.className = 'banda banda-azul'; $('.barra-titulo').after(banda); }
+    let primeraVez = false; try { primeraVez = !localStorage.getItem('alb-eml-ok'); } catch (e) { /* */ }
+    banda.innerHTML = `✉ Correo para la asesoría con el albarán ${a.numero} preparado en Outlook, con el PDF adjunto. Cuando lo envíes:
+      <button class="btn btn-primario" id="b-email-ok" style="margin-left:.6rem">Marcar enviado a asesoría</button>
+      ${primeraVez ? `<div class="peq" style="margin-top:.5rem">Si Outlook no se ha abierto solo: abre el archivo <b>Albaran ${a.numero}.eml</b> en las descargas del navegador (arriba a la derecha). Para que la próxima vez se abra solo: en esa descarga pulsa ⋯ → <b>Abrir siempre archivos de este tipo</b>.</div>` : ''}`;
+    $('#b-email-ok').onclick = ev => ocupado(ev.target, async () => {
+      try { localStorage.setItem('alb-eml-ok', '1'); } catch (e) { /* */ }
+      await B.marcarEnviados([a.id]);
+      aviso(`Albarán ${a.numero} marcado como enviado a la asesoría.`);
       verAlbaran(a.id);
     });
   }
@@ -1015,9 +1023,9 @@
           <button class="btn" id="b-sig">Guardar numeración</button>
         </section>
         <section class="tarjeta">
-          <h2>Envío por email</h2>
-          <label>Enviar los albaranes a (Para)<input id="a-email-para" type="text" value="${esc(ST.ajustes.email?.para || '')}" placeholder="facturas@ejemplo.es"></label>
-          <p class="tenue peq">El correo de la oficina donde se hacen las facturas. Si son varios, sepáralos con punto y coma (;). Si lo dejas vacío, la dirección se escribe en Outlook.</p>
+          <h2>Correo de la asesoría</h2>
+          <label>Dirección (se pone sola en el «Para» de Outlook)<input id="a-email-para" type="text" value="${esc(ST.ajustes.email?.para || '')}" placeholder="facturas@ejemplo.es"></label>
+          <p class="tenue peq">El correo de la asesoría, que es quien hace las facturas. Si son varios, sepáralos con punto y coma (;). Si lo dejas vacío, la dirección se escribe en Outlook.</p>
           <button class="btn" id="b-email-para">Guardar correo</button>
         </section>
         <section class="tarjeta">
@@ -1063,7 +1071,7 @@
       const para = $('#a-email-para').value.trim();
       const malos = para.split(/[;,\s]+/).filter(Boolean).filter(x => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
       if (malos.length) return aviso('Este correo no parece válido: ' + malos.join(', '), 'error');
-      ocupado(e.target, async () => { await B.guardarAjuste('email', { para }); ST.ajustes.email = { para }; aviso(para ? 'Los albaranes se enviarán a ' + para : 'Correo de envío borrado'); });
+      ocupado(e.target, async () => { await B.guardarAjuste('email', { para }); ST.ajustes.email = { para }; aviso(para ? 'Los albaranes para la asesoría irán a ' + para : 'Correo de envío borrado'); });
     };
     const ejPed = () => { $('#ped-ejemplo').textContent = U.pedidoTexto({ prefijo: $('#a-ped-pre').value.trim().toUpperCase(), siguiente: parseInt($('#a-ped-sig').value, 10) || 1 }, anio); };
     $('#a-ped-pre').oninput = ejPed; $('#a-ped-sig').oninput = ejPed;

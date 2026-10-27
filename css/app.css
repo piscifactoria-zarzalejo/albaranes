@@ -88,6 +88,7 @@ main { max-width: 1480px; margin: 0 auto; padding: 1.2rem 1.2rem 6rem; }
 .banda { border-radius: 8px; padding: .65rem .9rem; margin-bottom: 1rem; }
 .banda-roja { background: var(--rojo-claro); color: var(--rojo); }
 .banda-naranja { background: var(--naranja-claro); color: var(--naranja); }
+.banda-azul { background: var(--azul-claro); color: var(--azul); }
 .banda.peq { margin: .5rem 0 0; padding: .45rem .6rem; }
 
 /* Botones */

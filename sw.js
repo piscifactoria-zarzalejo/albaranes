@@ -3,12 +3,12 @@
 //  Siempre intenta descargar la versión más reciente; si no hay
 //  conexión (o tarda más de 4 s) usa la copia guardada en el ordenador.
 // ════════════════════════════════════════════════════════
-const CACHE = 'albaranes-v3';
+const CACHE = 'albaranes-v7';
 const ARCHIVOS = [
   './', 'index.html', 'manifest.json', 'css/app.css',
   'js/config.js', 'js/imagenes.js', 'js/semilla.js', 'js/util.js', 'js/datos.js', 'js/archivos.js', 'js/pdf.js', 'js/app.js',
   'vendor/supabase.js', 'vendor/jspdf.umd.min.js', 'vendor/xlsx.full.min.js',
-  'iconos/icono-192.png', 'iconos/icono-512.png'
+  'iconos/logo-192.png', 'iconos/logo-512.png'
 ];
 
 self.addEventListener('install', e => {
