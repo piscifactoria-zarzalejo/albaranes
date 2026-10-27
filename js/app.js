@@ -561,13 +561,14 @@
       const c = f.cliente;
       if (c) {
         const actual = clientePorId(f.cliente_id);
-        const distinto = actual && id && ['nombre', 'direccion', 'cp', 'poblacion', 'provincia', 'cif', 'telefono', 'regimen_iva'].some(k => (actual[k] || '') !== (c[k] || ''));
+        const distinto = actual && id && ['nombre', 'direccion', 'cp', 'poblacion', 'provincia', 'cif', 'telefono', 'regimen_iva', 'idioma'].some(k => (actual[k] || '') !== (c[k] || ''));
         z.innerHTML = `
           <div class="cliente-sel">
             <div><div class="fuerte">${esc(c.nombre)} <span class="tenue">· cód. ${esc(c.codigo)}</span></div>
               <div class="peq">${esc([c.direccion, [c.cp, c.poblacion].filter(Boolean).join(' '), c.provincia !== c.pais && c.pais !== 'España' ? c.pais : c.provincia].filter(Boolean).join(' · '))}</div>
               <div class="peq">CIF/NIF: ${esc(c.cif || '—')} · Tel.: ${esc(c.telefono || '—')}</div>
               ${c.regimen_iva && c.regimen_iva !== 'nacional' ? `<span class="etq etq-azul">${esc(U.REGIMEN[c.regimen_iva])}</span>` : ''}
+              ${c.idioma === 'en' ? '<span class="etq etq-azul" title="Los productos que tienen nombre en inglés salen en inglés en el albarán">Productos en inglés</span>' : ''}
               ${distinto ? `<div class="banda banda-naranja peq">Los datos de este cliente han cambiado desde que se hizo el albarán. <button type="button" class="enlace" id="b-actualizar-cli">Usar los datos actuales</button></div>` : ''}
             </div>
             <button type="button" class="btn" id="b-cambiar-cli">Cambiar</button>
@@ -583,7 +584,7 @@
           <button type="button" class="enlace peq" id="b-cli-nuevo">+ Crear cliente nuevo</button>`;
         const inp = $('#buscar-cli'), res = $('#res-cli');
         let sel = 0, encontrados = [];
-        const elegir = c => { f.cliente_id = c.id; f.cliente = { ...c }; marcarSucio(); pintarCliente(); recalcular(); };
+        const elegir = c => { f.cliente_id = c.id; f.cliente = { ...c }; marcarSucio(); pintarCliente(); pintarLineas(); recalcular(); };
         const pintarRes = () => {
           const q = U.norm(inp.value.trim());
           if (!q) { res.hidden = true; return; }
@@ -636,7 +637,7 @@
                 <small class="tenue">Concepto libre · cuenta como «Otros» en el resumen</small></div>`
               : `
               <label class="l-prod"><span class="solo-movil">Producto</span><select data-k="producto">${opcionesProducto(l)}</select>
-                <small class="tenue">${l.concepto ? esc(U.UNIDADES[up]?.nombre || '') + (Number(l.iva) !== 10 ? ' · IVA ' + U.num(l.iva, 2, 0) + '%' : '') : ''}</small></label>`}
+                <small class="tenue">${l.concepto ? esc(U.UNIDADES[up]?.nombre || '') + (Number(l.iva) !== 10 ? ' · IVA ' + U.num(l.iva, 2, 0) + '%' : '') + (f.cliente?.idioma === 'en' && l.nombre_en ? ' · sale como ' + esc(l.nombre_en) : '') : ''}</small></label>`}
               <label><span class="solo-movil">Kilos</span><input data-k="kilos" inputmode="decimal" value="${esc(l.kilos)}" class="${req('kilos') ? 'req' : ''}"></label>
               <label><span class="solo-movil">Unidades</span><input data-k="unidades" inputmode="numeric" value="${esc(l.unidades)}" class="${req('unidades') ? 'req' : ''}"></label>
               <div class="l-calc"><span class="solo-movil">Peso medio</span><output data-gr title="Kilos ÷ unidades (se calcula solo)">${c.gr_uni ? U.gramos(c.gr_uni) + ' g' : '—'}</output></div>
@@ -779,7 +780,7 @@
   const numEdit = v => (v === null || v === undefined || v === '') ? '' : String(v).replace('.', ',');
   function limpiarCliente(c) {
     const o = {};
-    ['id', 'codigo', 'nombre', 'direccion', 'cp', 'poblacion', 'provincia', 'pais', 'cif', 'telefono', 'email', 'explotacion', 'regimen_iva', 'categoria'].forEach(k => o[k] = c[k] ?? null);
+    ['id', 'codigo', 'nombre', 'direccion', 'cp', 'poblacion', 'provincia', 'pais', 'cif', 'telefono', 'email', 'explotacion', 'regimen_iva', 'categoria', 'idioma'].forEach(k => o[k] = c[k] ?? null);
     return o;
   }
   async function lotesRecientes() {
@@ -843,6 +844,9 @@
         <div class="campos-3">${campo('cp', 'C.P.')}${campo('poblacion', 'Población', { cls: 'span2' })}</div>
         <div class="campos-3">${campo('provincia', 'Provincia')}${campo('pais', 'País')}
           <label>IVA<select name="regimen_iva">${Object.entries(U.REGIMEN).map(([k, v]) => `<option value="${k}" ${c.regimen_iva === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
+        <label>Productos en el albarán<select name="idioma">
+          <option value="es" ${c.idioma !== 'en' ? 'selected' : ''}>En español</option>
+          <option value="en" ${c.idioma === 'en' ? 'selected' : ''}>En inglés (para clientes extranjeros)</option></select></label>
         <div class="campos-3">${campo('cif', 'CIF / NIF / VAT')}${campo('telefono', 'Teléfono')}${campo('telefono2', 'Teléfono 2')}</div>
         <div class="campos-3">${campo('contacto', 'Persona de contacto')}${campo('email', 'Email', { attr: 'type="email"' })}${campo('explotacion', 'Nº explotación / REGA')}</div>
         <label>Notas<textarea name="notas" rows="2">${esc(c.notas || '')}</textarea></label>
@@ -851,8 +855,9 @@
         $('#f-cli', m).onsubmit = e => {
           e.preventDefault();
           const fd = new FormData(e.target), d = { ...(nuevo ? {} : { id: c.id }) };
-          ['categoria', 'nombre', 'direccion', 'cp', 'poblacion', 'provincia', 'pais', 'cif', 'telefono', 'telefono2', 'contacto', 'email', 'explotacion', 'notas', 'regimen_iva']
+          ['categoria', 'nombre', 'direccion', 'cp', 'poblacion', 'provincia', 'pais', 'cif', 'telefono', 'telefono2', 'contacto', 'email', 'explotacion', 'notas', 'regimen_iva', 'idioma']
             .forEach(k => { const v = (fd.get(k) || '').trim(); d[k] = v || null; });
+          d.idioma = d.idioma === 'en' ? 'en' : 'es';
           d.codigo = parseInt(fd.get('codigo'), 10); d.pais = d.pais || 'España'; d.regimen_iva = d.regimen_iva || 'nacional';
           if (!d.nombre) return aviso('Falta el nombre del cliente', 'error');
           if (!d.codigo) return aviso('El código debe ser un número', 'error');
@@ -889,7 +894,7 @@
       <h2>${nuevo ? 'Nuevo producto' : 'Producto'}</h2>
       <form id="f-pro" class="campos-form">
         <label>Nombre (tal como sale en el albarán)<input name="nombre" value="${esc(p.nombre || '')}" required></label>
-        <label>Nombre en inglés (para clientes extranjeros)<input name="nombre_en" value="${esc(p.nombre_en || '')}"></label>
+        <label>Nombre en inglés (sale en el albarán de los clientes extranjeros)<input name="nombre_en" value="${esc(p.nombre_en || '')}" required></label>
         <div class="campos-2">
           <label>Se cobra<select name="unidad_precio">${Object.entries(U.UNIDADES).map(([k, v]) => `<option value="${k}" ${p.unidad_precio === k ? 'selected' : ''}>${v.nombre} (${v.precio})</option>`).join('')}</select></label>
           <label>Familia para estadísticas<select name="familia">${Object.entries(U.FAMILIAS).map(([k, v]) => `<option value="${k}" ${p.familia === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
@@ -905,6 +910,7 @@
           const d = { ...(nuevo ? {} : { id: p.id }), nombre: (fd.get('nombre') || '').trim().toUpperCase(), unidad_precio: fd.get('unidad_precio'), familia: fd.get('familia'),
             iva: U.parse(fd.get('iva')), nombre_en: (fd.get('nombre_en') || '').trim().toUpperCase() || null, activo: !!fd.get('activo') };
           if (!d.nombre) return aviso('Falta el nombre', 'error');
+          if (!d.nombre_en) return aviso('Falta el nombre en inglés', 'error');
           if (d.iva === null || d.iva < 0 || d.iva > 30) return aviso('El IVA no es válido', 'error');
           ocupado($('button.btn-primario', m), async () => {
             await B.guardarProducto(d); ST.productos = await B.productos();

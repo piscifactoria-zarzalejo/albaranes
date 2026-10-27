@@ -106,7 +106,7 @@
     (a.lineas || []).slice(0, nFil).forEach((l, i) => {
       const y = Y_LIN + i * FILA + FILA / 2;
       const calc = U.calcLinea(l);
-      let concepto = (a.idioma === 'en' && l.nombre_en) ? l.nombre_en : (l.concepto || '');
+      let concepto = (a.cliente?.idioma === 'en' && l.nombre_en) ? l.nombre_en : (l.concepto || '');   // clientes en inglés
       if (l.unidad_precio === 'millar_cm' && U.parse(l.talla_cm)) concepto += ' (' + U.num(U.parse(l.talla_cm), 1, 0) + ' cm)';
       const celdas = [
         U.kg(U.parse(l.kilos)), concepto, l.lote || '', l.estanque || '',
